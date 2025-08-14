@@ -1,134 +1,157 @@
-<!doctype html>
-<html lang="ar">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>ORYX Robot — Interactive</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Oryx Robot — Interactive</title>
   <style>
-    html,body { height:100%; margin:0; background:#243b4a }
-    canvas { display:block }
-    .hud {
-      position:fixed; inset:auto 12px 12px 12px; padding:10px 12px;
-      font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      background:rgba(0,0,0,.35); color:#fff; border:1px solid rgba(255,255,255,.15); border-radius:10px
+    :root{ --blue:#243b4a; --orange:#f99f00 }
+    html,body{ height:100%; margin:0; background:var(--blue); color:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial }
+    canvas{ display:block }
+    #hud{
+      position:fixed; left:10px; bottom:10px; background:rgba(0,0,0,.5);
+      padding:10px 12px; border-radius:8px; font-size:.9em; border:1px solid rgba(255,255,255,.15)
     }
-    .hud b { color:#f99f00 }
+    #hud b{ color:var(--orange) }
   </style>
 </head>
 <body>
-  <div class="hud" id="hud">جاري التهيئة…</div>
+  <div id="hud">Initializing…</div>
 
   <script type="module">
-    // ====== إعدادات الهوية ======
-    const ORYX_BLUE   = 0x243b4a;
-    const ORYX_ORANGE = 0xf99f00;
+    import * as THREE from 'https://unpkg.com/three@0.126.0/build/three.module.js';
+    import { GLTFLoader } from 'https://unpkg.com/three@0.126.0/examples/jsm/loaders/GLTFLoader.js';
 
-    // مهم: بما أن GLB في نفس الجذر، نستخدم مسار نسبي (لا تبدأ بـ /)
-    const ROBOT_URL = "./Eclipse_Sentinel_0813205056_texture.glb";
+    // ——— settings ———
+    const HUD = document.getElementById('hud');
+    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb'; // غيّره إن كان داخل مجلد
 
-    // ====== أدوات ======
-    const hud = document.getElementById('hud');
-    const log = (msg) => hud.innerHTML = msg;
-    const apx = (n) => (n ?? 0).toFixed(0);
-
-    // فحص مسبق للرابط (يساعد لو في 404 أو مسار غلط)
+    // ——— preflight: verify the GLB URL actually exists ———
     try {
-      const headResp = await fetch(ROBOT_URL, { method: 'HEAD', cache: 'no-store' });
-      if (!headResp.ok) {
-        log(`❌ لم أستطع الوصول للملف:<br><b>${ROBOT_URL}</b><br>HTTP ${headResp.status}. 
-        تأكد من الاسم والمسار والحروف الكبيرة/الصغيرة. إن كان الملف داخل مجلد، عدّل ROBOT_URL ليتوافق معه.`);
+      const head = await fetch(ROBOT_URL, { method:'HEAD', cache:'no-store' });
+      if (!head.ok) {
+        HUD.innerHTML = `❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b><br>Check the exact name/location (case-sensitive).`;
       } else {
-        log(`✅ الرابط سليم: <b>${ROBOT_URL}</b><br>ابدأ التحميل…`);
+        HUD.innerHTML = `⏳ Preparing to load: <b>${ROBOT_URL}</b>`;
       }
     } catch (e) {
-      log(`❌ فشل فحص الرابط (HEAD): ${e?.message || e}`);
+      HUD.innerHTML = `❌ Preflight failed: ${e?.message || e}`;
     }
 
-    // ====== تحميل Three من CDN (المكتبات فقط) ======
-    const [{ default: * as THREE }, { GLTFLoader }] = await Promise.all([
-      import("https://unpkg.com/three@0.160.0/build/three.module.js"),
-      import("https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js"),
-    ]);
+    // ——— three.js scene ———
+    let renderer, scene, camera, model, headBone;
+    let mouseX = 0.5, mouseY = 0.5;
 
-    // ====== مشهد أساسي ======
-    const renderer = new THREE.WebGLRenderer({ antialias:true });
-    renderer.setSize(innerWidth, innerHeight);
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    document.body.appendChild(renderer.domElement);
+    function init() {
+      renderer = new THREE.WebGLRenderer({ antialias:true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputEncoding = THREE.sRGBEncoding; // r126 API
+      document.body.appendChild(renderer.domElement);
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(ORYX_BLUE);
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x243b4a);
 
-    const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, .1, 100);
-    camera.position.set(0, 1.6, 3);
+      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.set(0, 1.6, 3);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, ORYX_BLUE, .6));
-    const rim = new THREE.DirectionalLight(ORYX_ORANGE, 1.1); rim.position.set(1.5,1.2,1); scene.add(rim);
-    const key = new THREE.DirectionalLight(0xffffff, .8);    key.position.set(-1.2,1.5,2); scene.add(key);
+      // lights (ORYX look)
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.6);
+      scene.add(hemi);
+      const rim = new THREE.DirectionalLight(0xf99f00, 1.1);
+      rim.position.set(1.5, 1.2, 1.0);
+      scene.add(rim);
+      const key = new THREE.DirectionalLight(0xffffff, 0.8);
+      key.position.set(-1.2, 1.5, 2.0);
+      scene.add(key);
 
-    // ====== تحميل GLB ======
-    let robot, headBone = null, t = 0, mx = .5, my = .5;
+      window.addEventListener('resize', onResize);
+      document.addEventListener('mousemove', (e)=>{
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = e.clientY / window.innerHeight;
+      });
 
-    const loader = new GLTFLoader();
-    loader.load(
-      ROBOT_URL,
-      (gltf) => {
-        robot = gltf.scene;
-        robot.traverse((o)=>{
-          if (o.isMesh) { o.castShadow = o.receiveShadow = true; if (o.material && 'roughness' in o.material) o.material.roughness = .35; }
-          if (!headBone && /head|neck/i.test(o.name)) headBone = o;
-        });
+      loadModel();
+    }
 
-        // Center & scale
-        const box = new THREE.Box3().setFromObject(robot);
-        const size = new THREE.Vector3(); box.getSize(size);
-        const center = new THREE.Vector3(); box.getCenter(center);
-        robot.position.sub(center);
-        robot.scale.setScalar(1.7 / (size.y || 1));
-        scene.add(robot);
-
-        log(`✅ تم التحميل — الحجم التقريبي: <b>${apx(size.x)}×${apx(size.y)}×${apx(size.z)}</b>`);
-      },
-      (e) => log(`⏳ تحميل: <b>${apx((e.loaded/e.total)*100 || 0)}%</b>`),
-      (err) => {
-        console.error(err);
-        log(`❌ فشل تحميل GLB:<br><b>${ROBOT_URL}</b><br>${err?.message || err}`);
-      }
-    );
-
-    // تفاعل الماوس
-    addEventListener('mousemove', (e)=>{ mx = e.clientX/innerWidth; my = e.clientY/innerHeight; });
-
-    // حلقة الرسم
-    renderer.setAnimationLoop(()=>{
-      t += 0.016;
-      if (robot){
-        const tiltX = (my - 0.5) * -0.15;
-        const tiltY = (mx - 0.5) *  0.25;
-        robot.rotation.x = THREE.MathUtils.lerp(robot.rotation.x, tiltX, 0.08);
-        robot.rotation.y = THREE.MathUtils.lerp(robot.rotation.y, tiltY, 0.08);
-        robot.position.y = Math.sin(t*1.2) * 0.02;
-
-        if (headBone){
-          headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mx-0.5)*0.6, 0.15);
-          headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (my-0.5)*-0.4, 0.15);
-        }
-      }
-      renderer.render(scene, camera);
-    });
-
-    // Resize
-    addEventListener('resize', ()=>{
-      camera.aspect = innerWidth/innerHeight;
+    function onResize(){
+      camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
-      renderer.setSize(innerWidth, innerHeight);
-      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
 
-    // اختبارات بسيطة (تظهر بالكونسول)
-    console.assert(!!document.querySelector('canvas'), '[TEST] canvas mounted');
-    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL is relative (Pages-safe)');
+    function loadModel() {
+      const loader = new GLTFLoader();
+      HUD.textContent = '⏳ Loading: 0%';
+
+      loader.load(
+        ROBOT_URL,
+        (gltf)=>{
+          model = gltf.scene;
+          model.traverse((node)=>{
+            if (node.isMesh) {
+              node.castShadow = true;
+              node.receiveShadow = true;
+              if (node.material && 'roughness' in node.material) node.material.roughness = 0.35;
+            }
+            if (!headBone && (node.isBone || node.type === 'Bone') && /head|neck/i.test(node.name)) {
+              headBone = node;
+            }
+          });
+
+          // center & scale to ~1.7m tall
+          const bbox = new THREE.Box3().setFromObject(model);
+          const size = bbox.getSize(new THREE.Vector3());
+          const center = bbox.getCenter(new THREE.Vector3());
+          model.position.sub(center);
+          const s = 1.7 / (size.y || 1);
+          model.scale.setScalar(s);
+
+          scene.add(model);
+          HUD.innerHTML = `✅ Loaded — approx size: <b>${size.x.toFixed(2)}×${size.y.toFixed(2)}×${size.z.toFixed(2)} m</b>`;
+          animate();
+        },
+        (xhr)=>{
+          // xhr.total can be 0/undefined on some servers → guard it
+          const pct = xhr.total ? (xhr.loaded / xhr.total * 100) : 0;
+          HUD.innerHTML = `⏳ Loading: <b>${Math.round(pct)}%</b>`;
+        },
+        (err)=>{
+          console.error('GLB load error:', err);
+          HUD.innerHTML = `❌ Error loading model:<br><b>${ROBOT_URL}</b><br>${err?.message || err}`;
+        }
+      );
+    }
+
+    function animate(){
+      renderer.setAnimationLoop(()=>{
+        if (model){
+          const t = performance.now() * 0.001;
+
+          // breathing
+          model.position.y = Math.sin(t * 1.2) * 0.02;
+
+          // body tilt (mouseX/Y are 0..1)
+          const tiltX = (mouseY - 0.5) * -0.15;
+          const tiltY = (mouseX - 0.5) *  0.25;
+          model.rotation.x = THREE.MathUtils.lerp(model.rotation.x, tiltX, 0.08);
+          model.rotation.y = THREE.MathUtils.lerp(model.rotation.y, tiltY, 0.08);
+
+          // head look (if bone exists)
+          if (headBone){
+            headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mouseX - 0.5) * 0.6, 0.15);
+            headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (mouseY - 0.5) * -0.4, 0.15);
+          }
+        }
+        renderer.render(scene, camera);
+      });
+    }
+
+    // small self-tests (show in console)
+    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative for GitHub Project Pages.');
+    console.assert(!!document.body, '[TEST] DOM ready');
+
+    init();
   </script>
 </body>
 </html>
