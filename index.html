@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>ORYX Robot — Interactive (Right Dock + Actions)</title>
+  <title>ORYX Robot — Right Dock + Actions</title>
   <style>
     :root{ --blue:#243b4a; --orange:#f99f00 }
     html,body{ height:100%; margin:0; background:var(--blue); color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial }
     canvas{ display:block }
     #hud{
       position:fixed; left:10px; bottom:10px; background:rgba(0,0,0,.52);
-      padding:10px 12px; border-radius:10px; font-size:.9em; border:1px solid rgba(255,255,255,.18); max-width:48ch
+      padding:10px 12px; border-radius:10px; font-size:.9em; border:1px solid rgba(255,255,255,.18); max-width:52ch
     }
     #hud b{ color:var(--orange) }
     #help{
@@ -20,263 +20,232 @@
 </head>
 <body>
   <div id="hud">Initializing…</div>
-  <div id="help">🖱️ Click: wave • ⌨️ S: sit / stand</div>
+  <div id="help">🖱️ Click: wave • ⌨️ S: sit/stand</div>
 
   <script type="module">
-    // Use r126 (as earlier)
     import * as THREE from 'https://unpkg.com/three@0.126.0/build/three.module.js';
     import { GLTFLoader } from 'https://unpkg.com/three@0.126.0/examples/jsm/loaders/GLTFLoader.js';
 
     const HUD = document.getElementById('hud');
-    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb'; // GLB beside index.html
+    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb'; // GLB must be next to index.html
 
-    // Renderer / scene
-    const renderer = new THREE.WebGLRenderer({ antialias:true });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    renderer.setSize(innerWidth, innerHeight);
-    renderer.outputEncoding = THREE.sRGBEncoding;           // r126 API
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    document.body.appendChild(renderer.domElement);
+    // helpers
+    const log = (msg)=> HUD.innerHTML = msg;
+    const lerp = (a,b,t)=> a+(b-a)*t;
+    function slerpBone(b, ax=0, ay=0, az=0, k=0.15){ if(!b) return; b.rotation.x=lerp(b.rotation.x,ax,k); b.rotation.y=lerp(b.rotation.y,ay,k); b.rotation.z=lerp(b.rotation.z,az,k); }
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x243b4a);
-
-    const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 100);
-    camera.position.set(0, 1.6, 3);
-
-    // Lights (ORYX look)
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.95);
-    scene.add(hemi);
-    const rim = new THREE.DirectionalLight(0xf99f00, 1.25);
-    rim.position.set(2.0, 1.6, 1.3);
-    scene.add(rim);
-    const key = new THREE.DirectionalLight(0xffffff, 1.05);
-    key.position.set(-1.6, 1.9, 2.3);
-    scene.add(key);
-
-    // Preflight
-    try{
-      const head = await fetch(ROBOT_URL,{method:'HEAD',cache:'no-store'});
-      HUD.innerHTML = head.ok
-        ? `⏳ Preparing to load: <b>${ROBOT_URL}</b>`
-        : `❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b>`;
-    }catch(e){ HUD.innerHTML = `❌ Preflight failed: ${e?.message||e}` }
-
-    // Load model
-    const loader = new GLTFLoader();
-    let robot, baseY = 0, mx=.5, my=.5, lookLeftBias = -0.25; // look slightly to the left by default
-    let bones = {}; // discovered bones
-    let pose = { sit: false, waveT: 0 }; // simple state machine
-
-    const wantHeightFrac = 0.75;   // robot fills ~75% of viewport height
-    const rightMarginFrac = 0.12;  // margin from right edge
-
-    function findBone(root, patterns){
-      let found=null;
-      root.traverse(o=>{
-        if(found) return;
-        const n = (o.name||'').toLowerCase();
-        for(const p of patterns){ if(p.test(n)){ found=o; break; } }
-      });
-      return found;
-    }
-    function collectBones(root){
-      const L = [/left\b/i, /\bl_/i, /\.l\b/i, /_l\b/i, /-l\b/i, /arm\.l/i, /hand\.l/i];
-      const R = [/right\b/i, /\br_/i, /\.r\b/i, /_r\b/i, /-r\b/i, /arm\.r/i, /hand\.r/i];
-      const re = {
-        head:   [/head/i],
-        neck:   [/neck/i],
-        spine:  [/spine|chest|torso/i],
-        hips:   [/hips|pelvis|root/i],
-        shoulder: [/shoulder/i],
-        upperArm: [/upper.?arm|arm(?!ature)/i],
-        foreArm: [/fore.?arm|lower.?arm/i],
-        hand:   [/hand|wrist/i],
-        thigh:  [/thigh|upper.?leg/i],
-        calf:   [/calf|shin|lower.?leg/i],
-      };
-      const side = (arr)=> ([
-        findBone(root, arr.map(a=>new RegExp(a.source.replace(')','.*left)?'),'i')) // dummy
-      ]);
-      bones.head     = findBone(root, re.head);
-      bones.neck     = findBone(root, re.neck) || bones.head?.parent || null;
-      bones.spine    = findBone(root, re.spine);
-      bones.hips     = findBone(root, re.hips);
-
-      // Left
-      bones.shoulderL = findBone(root, [/(shoulder).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(shoulder)/i]);
-      bones.upperArmL = findBone(root, [/(upper.?arm|arm(?!ature)).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(upper.?arm|arm(?!ature))/i]);
-      bones.foreArmL  = findBone(root, [/(fore.?arm|lower.?arm).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(fore.?arm|lower.?arm)/i]);
-      bones.handL     = findBone(root, [/(hand|wrist).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(hand|wrist)/i]);
-      bones.thighL    = findBone(root, [/(thigh|upper.?leg).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(thigh|upper.?leg)/i]);
-      bones.calfL     = findBone(root, [/(calf|shin|lower.?leg).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(calf|shin|lower.?leg)/i]);
-
-      // Right
-      bones.shoulderR = findBone(root, [/(shoulder).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(shoulder)/i]);
-      bones.upperArmR = findBone(root, [/(upper.?arm|arm(?!ature)).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(upper.?arm|arm(?!ature))/i]);
-      bones.foreArmR  = findBone(root, [/(fore.?arm|lower.?arm).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(fore.?arm|lower.?arm)/i]);
-      bones.handR     = findBone(root, [/(hand|wrist).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(hand|wrist)/i]);
-      bones.thighR    = findBone(root, [/(thigh|upper.?leg).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(thigh|upper.?leg)/i]);
-      bones.calfR     = findBone(root, [/(calf|shin|lower.?leg).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(calf|shin|lower.?leg)/i]);
-    }
-
-    function lerp(a,b,t){ return a+(b-a)*t; }
-    function slerpBone(bone, ax, ay, az, k=0.15){
-      if(!bone) return;
-      bone.rotation.x = lerp(bone.rotation.x, ax, k);
-      bone.rotation.y = lerp(bone.rotation.y, ay, k);
-      bone.rotation.z = lerp(bone.rotation.z, az, k);
-    }
-
-    let foundListText = '';
-
-    loader.load(
-      ROBOT_URL,
-      (gltf)=>{
-        robot = gltf.scene;
-
-        // Materials & nicer look
-        robot.traverse(o=>{
-          if(o.isMesh && o.material){
-            if('roughness' in o.material) o.material.roughness = 0.35;
-            if('metalness'  in o.material) o.material.metalness  = Math.min(0.9, (o.material.metalness ?? 0.6));
-            if('envMapIntensity' in o.material) o.material.envMapIntensity = 1.1;
-          }
-        });
-
-        // Bounding box
-        const box  = new THREE.Box3().setFromObject(robot);
-        const size = box.getSize(new THREE.Vector3());
-        const cen  = box.getCenter(new THREE.Vector3());
-
-        // Center at origin, scale to desired height fraction
-        robot.position.sub(cen);
-
-        // Camera distance for nice composition
-        const distForHeight = (size.y * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5));
-        const D = Math.max(2.6, distForHeight * 1.15);
-
-        // Compute scale so projected height ≈ wantHeightFrac of viewport
-        const scale = (wantHeightFrac * (2*D*Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5)))) / (size.y || 1);
-        robot.scale.setScalar(scale);
-
-        const scaledH = size.y * scale;
-        const halfH   = scaledH * 0.5;
-
-        // Put feet on ground (y=0)
-        robot.position.y += halfH;
-        baseY = robot.position.y;
-
-        // Dock to the RIGHT
-        const halfViewW = Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5)) * D * camera.aspect;
-        const robotHalfW = (size.x * scale) * 0.5;
-        const margin = halfViewW * rightMarginFrac;
-        robot.position.x = (halfViewW - margin - robotHalfW);
-
-        // Face slightly left
-        robot.rotation.y = -0.25;
-
-        // Camera aim
-        const midY = baseY * 0.95;
-        camera.position.set(0, midY, D);
-        camera.lookAt(0, midY, 0);
-
-        // Bones
-        collectBones(robot);
-        const names = Object.entries(bones).filter(([k,v])=>!!v).map(([k,v])=>k);
-        foundListText = names.length ? names.join(', ') : 'no named bones detected';
-        HUD.innerHTML = `✅ Loaded • bones: <b>${foundListText}</b>`;
-
-        scene.add(robot);
-      },
-      (xhr)=>{
-        const pct = xhr.total ? (xhr.loaded/xhr.total*100) : 0;
-        HUD.innerHTML = `⏳ Loading: <b>${pct.toFixed(0)}%</b>`;
-      },
-      (err)=>{
-        console.error(err);
-        HUD.innerHTML = `❌ Error loading: <b>${ROBOT_URL}</b><br>${err?.message||err}`;
-      }
-    );
-
-    // Interaction
-    addEventListener('mousemove', e=>{ mx = e.clientX/innerWidth; my = e.clientY/innerHeight; });
-    addEventListener('click', ()=>{ pose.waveT = 0.0001; }); // start wave
-    addEventListener('keydown', (e)=>{
-      if(e.key.toLowerCase()==='s'){ pose.sit = !pose.sit; }
-    });
-
-    // Animation loop
-    renderer.setAnimationLoop(()=>{
-      if (robot){
-        const t = performance.now()*0.001;
-
-        // Subtle breathing around baseY
-        robot.position.y = baseY + Math.sin(t*1.2)*0.03;
-
-        // Body tilt by mouse
-        const tiltX = (my - 0.5) * -0.12;
-        const tiltY = (mx - 0.5) *  0.20 + lookLeftBias;
-        robot.rotation.x = THREE.MathUtils.lerp(robot.rotation.x, tiltX, 0.08);
-        robot.rotation.y = THREE.MathUtils.lerp(robot.rotation.y, tiltY, 0.08);
-
-        // Head look (if detected)
-        if (bones.head || bones.neck){
-          const head = bones.head || bones.neck;
-          const hx = (my - 0.5) * -0.35;
-          const hy = (mx - 0.5) *  0.55 + lookLeftBias;
-          slerpBone(head, hx, hy, 0, 0.18);
+    async function boot(){
+      try{
+        // Preflight (HEAD) without top-level await
+        log('Checking GLB…');
+        const head = await fetch(ROBOT_URL, { method:'HEAD', cache:'no-store' });
+        if(!head.ok){
+          log(`❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b>`);
+          return;
         }
-
-        // Arms react slightly to mouse
-        const armSwing = (mx - 0.5) * 0.3;
-        slerpBone(bones.upperArmL,  0.10,  armSwing*0.5,  0.05, 0.12);
-        slerpBone(bones.foreArmL,   0.25,  armSwing*0.3, -0.05, 0.12);
-        slerpBone(bones.handL,      0.10,  0.0,          0.0 , 0.12);
-
-        slerpBone(bones.upperArmR,  0.05, -armSwing*0.5, -0.05, 0.12);
-        slerpBone(bones.foreArmR,   0.20, -armSwing*0.3,  0.05, 0.12);
-        slerpBone(bones.handR,      0.08,  0.0,          0.0 , 0.12);
-
-        // Wave animation (right arm) on click
-        if (pose.waveT > 0){
-          pose.waveT += 0.08; // speed
-          const w = Math.sin(pose.waveT)*0.6;   // forearm swing
-          const up= Math.min(1.2, pose.waveT*0.5); // raise
-          slerpBone(bones.upperArmR,  up, -0.4, 0, 0.25);
-          slerpBone(bones.foreArmR,   w+0.6, -0.1, 0, 0.25);
-          slerpBone(bones.handR,      0.2,  0,   0, 0.25);
-          if (pose.waveT > Math.PI*3){ pose.waveT = 0; } // stop after a few swings
-        }
-
-        // Sit/Stand pose (toggle with 'S')
-        const sitK = pose.sit ? 1 : 0; // 0 = stand, 1 = sit
-        // hips down
-        if (bones.hips){
-          const targetY = baseY - 0.45 * sitK; // drop hips ~45cm when sitting
-          bones.hips.position.y = lerp(bones.hips.position.y, targetY, 0.15);
-        }
-        // Legs bend
-        slerpBone(bones.thighL, -1.0*sitK, 0, 0, 0.18);
-        slerpBone(bones.calfL,   1.3*sitK, 0, 0, 0.18);
-        slerpBone(bones.thighR, -1.0*sitK, 0, 0, 0.18);
-        slerpBone(bones.calfR,   1.3*sitK, 0, 0, 0.18);
+        log(`⏳ Preparing to load: <b>${ROBOT_URL}</b>`);
+      }catch(e){
+        log(`❌ Preflight failed: ${e?.message || e}`);
+        return;
       }
 
-      renderer.render(scene, camera);
-    });
-
-    // Resize (keep simple: just update camera & renderer)
-    addEventListener('resize', ()=>{
-      camera.aspect = innerWidth/innerHeight;
-      camera.updateProjectionMatrix();
+      // Renderer / Scene / Camera
+      const renderer = new THREE.WebGLRenderer({ antialias:true });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
       renderer.setSize(innerWidth, innerHeight);
-    });
+      renderer.outputEncoding = THREE.sRGBEncoding;           // r126 API
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.2;
+      document.body.appendChild(renderer.domElement);
 
-    // Basic tests
-    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative for Project Pages.');
-    console.assert(!!document.querySelector('canvas'), '[TEST] canvas mounted');
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x243b4a);
+
+      const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 100);
+      camera.position.set(0, 1.6, 3);
+
+      // Lights
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.95);
+      scene.add(hemi);
+      const rim = new THREE.DirectionalLight(0xf99f00, 1.25); rim.position.set(2.0, 1.6, 1.3); scene.add(rim);
+      const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(-1.6, 1.9, 2.3); scene.add(key);
+
+      // Mouse & actions
+      let mx=.5, my=.5; addEventListener('mousemove', e=>{ mx=e.clientX/innerWidth; my=e.clientY/innerHeight; });
+      let pose = { sit:false, waveT:0 };
+      addEventListener('click', ()=>{ pose.waveT = 0.001; });
+      addEventListener('keydown', e=>{ if(e.key.toLowerCase()==='s') pose.sit=!pose.sit; });
+
+      // Load model
+      const loader = new GLTFLoader();
+      let robot, bones={}, baseY=0, lookLeftBias=-0.25;
+
+      function findBone(root, regexes){
+        let found=null;
+        root.traverse(o=>{
+          if(found) return;
+          const n=(o.name||'').toLowerCase();
+          for(const r of regexes){ if(r.test(n)){ found=o; break; } }
+        });
+        return found;
+      }
+      function collectBones(root){
+        bones.head     = findBone(root, [/head/i]);
+        bones.neck     = findBone(root, [/neck/i]) || bones.head?.parent || null;
+        bones.spine    = findBone(root, [/spine|chest|torso/i]);
+        bones.hips     = findBone(root, [/hips|pelvis|root/i]);
+
+        bones.shoulderL= findBone(root, [/(shoulder).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(shoulder)/i]);
+        bones.upperArmL= findBone(root, [/(upper.?arm|arm(?!ature)).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(upper.?arm|arm(?!ature))/i]);
+        bones.foreArmL = findBone(root, [/(fore.?arm|lower.?arm).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(fore.?arm|lower.?arm)/i]);
+        bones.handL    = findBone(root, [/(hand|wrist).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(hand|wrist)/i]);
+        bones.thighL   = findBone(root, [/(thigh|upper.?leg).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(thigh|upper.?leg)/i]);
+        bones.calfL    = findBone(root, [/(calf|shin|lower.?leg).*(left|\.l|_l|-l)/i, /(left|\.l|_l|-l).*(calf|shin|lower.?leg)/i]);
+
+        bones.shoulderR= findBone(root, [/(shoulder).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(shoulder)/i]);
+        bones.upperArmR= findBone(root, [/(upper.?arm|arm(?!ature)).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(upper.?arm|arm(?!ature))/i]);
+        bones.foreArmR = findBone(root, [/(fore.?arm|lower.?arm).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(fore.?arm|lower.?arm)/i]);
+        bones.handR    = findBone(root, [/(hand|wrist).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(hand|wrist)/i]);
+        bones.thighR   = findBone(root, [/(thigh|upper.?leg).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(thigh|upper.?leg)/i]);
+        bones.calfR    = findBone(root, [/(calf|shin|lower.?leg).*(right|\.r|_r|-r)/i, /(right|\.r|_r|-r).*(calf|shin|lower.?leg)/i]);
+      }
+
+      loader.load(
+        ROBOT_URL,
+        (gltf)=>{
+          robot = gltf.scene;
+
+          // materials tweak for nicer look
+          robot.traverse(o=>{
+            if(o.isMesh && o.material){
+              if('roughness' in o.material) o.material.roughness = 0.35;
+              if('metalness'  in o.material) o.material.metalness  = Math.min(0.9, (o.material.metalness ?? 0.6));
+              if('envMapIntensity' in o.material) o.material.envMapIntensity = 1.1;
+            }
+          });
+
+          // center/scale/dock right
+          const box = new THREE.Box3().setFromObject(robot);
+          const size= box.getSize(new THREE.Vector3());
+          const cen = box.getCenter(new THREE.Vector3());
+          robot.position.sub(cen);
+
+          // distance & scale to fill ~75% height
+          const wantHeightFrac = 0.75;
+          const distForHeight = (size.y * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5));
+          const D = Math.max(2.6, distForHeight * 1.15);
+          const scale = (wantHeightFrac * (2*D*Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5)))) / (size.y || 1);
+          robot.scale.setScalar(scale);
+
+          const scaledH = size.y * scale;
+          const halfH   = scaledH * 0.5;
+
+          // feet on ground
+          robot.position.y += halfH;
+          baseY = robot.position.y;
+
+          // dock to right with margin
+          const rightMarginFrac = 0.12;
+          const halfViewW = Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5)) * D * camera.aspect;
+          const robotHalfW = (size.x * scale) * 0.5;
+          const margin = halfViewW * rightMarginFrac;
+          robot.position.x = (halfViewW - margin - robotHalfW);
+
+          // face slightly left
+          robot.rotation.y = -0.25;
+
+          // camera framing
+          const midY = baseY * 0.95;
+          camera.position.set(0, midY, D);
+          camera.lookAt(0, midY, 0);
+
+          scene.add(robot);
+
+          // bones
+          collectBones(robot);
+          const names = Object.entries(bones).filter(([k,v])=>!!v).map(([k])=>k);
+          log(`✅ Loaded • bones: <b>${names.length?names.join(', '):'none detected'}</b>`);
+        },
+        (xhr)=>{
+          const pct = xhr.total ? (xhr.loaded/xhr.total*100) : 0;
+          log(`⏳ Loading: <b>${pct.toFixed(0)}%</b>`);
+        },
+        (err)=>{
+          console.error(err);
+          log(`❌ Error loading: <b>${ROBOT_URL}</b><br>${err?.message||err}`);
+        }
+      );
+
+      // animate
+      renderer.setAnimationLoop(()=>{
+        if (robot){
+          const t = performance.now()*0.001;
+
+          // breathing around baseY
+          robot.position.y = baseY + Math.sin(t*1.2)*0.03;
+
+          // mouse-driven tilt
+          const tiltX = (my - 0.5) * -0.12;
+          const tiltY = (mx - 0.5) *  0.20 + (-0.25); // keep slight left
+          robot.rotation.x = THREE.MathUtils.lerp(robot.rotation.x, tiltX, 0.08);
+          robot.rotation.y = THREE.MathUtils.lerp(robot.rotation.y, tiltY, 0.08);
+
+          // head look
+          const head = bones.head || bones.neck;
+          if (head){
+            const hx = (my - 0.5) * -0.35;
+            const hy = (mx - 0.5) *  0.55 + (-0.25);
+            slerpBone(head, hx, hy, 0, 0.18);
+          }
+
+          // slight arm reaction to mouse
+          slerpBone(bones.upperArmL,  0.10,  (mx-0.5)*0.15,  0.05, 0.12);
+          slerpBone(bones.foreArmL,   0.25,  (mx-0.5)*0.10, -0.05, 0.12);
+          slerpBone(bones.upperArmR,  0.05, -(mx-0.5)*0.15, -0.05, 0.12);
+          slerpBone(bones.foreArmR,   0.20, -(mx-0.5)*0.10,  0.05, 0.12);
+
+          // wave on click (right arm)
+          if (pose.waveT > 0){
+            pose.waveT += 0.08;
+            const w = Math.sin(pose.waveT)*0.6;
+            slerpBone(bones.upperArmR,  Math.min(1.2, 0.3+pose.waveT*0.4), -0.4, 0, 0.25);
+            slerpBone(bones.foreArmR,   0.6+w, -0.1, 0, 0.25);
+            if (pose.waveT > Math.PI*3) pose.waveT = 0;
+          }
+
+          // sit/stand with 'S'
+          const sitK = pose.sit ? 1 : 0;
+          if (bones.hips){
+            const targetY = baseY - 0.45 * sitK;
+            bones.hips.position.y = lerp(bones.hips.position.y, targetY, 0.15);
+          }
+          slerpBone(bones.thighL, -1.0*sitK, 0, 0, 0.18);
+          slerpBone(bones.calfL,   1.3*sitK, 0, 0, 0.18);
+          slerpBone(bones.thighR, -1.0*sitK, 0, 0, 0.18);
+          slerpBone(bones.calfR,   1.3*sitK, 0, 0, 0.18);
+        }
+
+        renderer.render(scene, camera);
+      });
+
+      // resize
+      addEventListener('resize', ()=>{
+        camera.aspect = innerWidth/innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+        // (للبساطة لا نعيد رسو الروبوت يمينًا عند تغيير المقاس الكبير — أعد تحميل الصفحة إذا لزم)
+      });
+
+      // tests
+      console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative for Project Pages.');
+      console.assert(!!document.querySelector('canvas'), '[TEST] canvas mounted');
+    }
+
+    // start
+    boot().catch(err=>{
+      console.error(err);
+      HUD.innerHTML = `❌ Fatal error: ${err?.message || err}`;
+    });
   </script>
 </body>
 </html>
