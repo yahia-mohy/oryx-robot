@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ar">
+<head>
+  <meta charset="utf-8" />
+  <title>ORYX Robot — Interactive</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body { height:100%; margin:0; background:#243b4a; }
+    canvas { display:block }
+    .hint { position:fixed; left:12px; bottom:12px; color:#fff; font:14px/1.4 system-ui; opacity:.85 }
+  </style>
+</head>
+<body>
+  <div class="hint">حرّك الماوس للتفاعل — ORYX: #243b4a / #f99f00</div>
+
+  <!-- نحمّل Three.js وملحقاته من CDN، والـ GLB من GitHub الخاص بك -->
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+    import { GLTFLoader } from "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
+
+    const ORYX_BLUE   = 0x243b4a;
+    const ORYX_ORANGE = 0xf99f00;
+
+    // ملف GLB موجود في نفس الريبو (الجذر)
+    const ROBOT_URL = "./Eclipse_Sentinel_0813205056_texture.glb";
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+
+    // Scene & Camera
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(ORYX_BLUE);
+
+    const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100);
+    camera.position.set(0, 1.6, 3);
+
+    // Lights (متناسقة مع ORYX)
+    scene.add(new THREE.HemisphereLight(0xffffff, ORYX_BLUE, 0.6));
+    const rim = new THREE.DirectionalLight(ORYX_ORANGE, 1.1);
+    rim.position.set(1.5, 1.2, 1.0); scene.add(rim);
+    const key = new THREE.DirectionalLight(0xffffff, 0.8);
+    key.position.set(-1.2, 1.5, 2.0); scene.add(key);
+
+    // Load GLB
+    const loader = new GLTFLoader();
+    let robot, headBone = null, t = 0, mx = 0.5, my = 0.5;
+
+    loader.load(
+      ROBOT_URL,
+      (gltf) => {
+        robot = gltf.scene;
+        robot.traverse((o)=>{
+          if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.material.roughness = 0.35; }
+          if (!headBone && /head|neck/i.test(o.name)) headBone = o;
+        });
+
+        // Center & scale
+        const box = new THREE.Box3().setFromObject(robot);
+        const size = new THREE.Vector3(); box.getSize(size);
+        const center = new THREE.Vector3(); box.getCenter(center);
+        robot.position.sub(center);
+        robot.scale.setScalar(1.7 / (size.y || 1));
+        scene.add(robot);
+
+        console.log("✅ GLB loaded:", ROBOT_URL);
+      },
+      (e)=> console.log(`Loading: ${((e.loaded/e.total)*100 || 0).toFixed(0)}%`),
+      (err)=> console.error("GLB load error:", err)
+    );
+
+    // Mouse follow
+    addEventListener("mousemove", (e)=>{ mx = e.clientX / innerWidth; my = e.clientY / innerHeight; });
+
+    // Animate
+    renderer.setAnimationLoop(()=>{
+      t += 0.016;
+      if (robot){
+        // Tilt مع المؤشر
+        const tiltX = (my - 0.5) * -0.15;
+        const tiltY = (mx - 0.5) *  0.25;
+        robot.rotation.x = THREE.MathUtils.lerp(robot.rotation.x, tiltX, 0.08);
+        robot.rotation.y = THREE.MathUtils.lerp(robot.rotation.y, tiltY, 0.08);
+        // تنفّس خفيف
+        robot.position.y = Math.sin(t*1.2) * 0.02;
+        // النظر بالرأس
+        if (headBone){
+          headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mx-0.5)*0.6, 0.15);
+          headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (my-0.5)*-0.4, 0.15);
+        }
+      }
+      renderer.render(scene, camera);
+    });
+
+    // Resize
+    addEventListener("resize", ()=>{
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    });
+
+    // اختبارات صغيرة في الكونسول
+    console.assert(!!document.querySelector("canvas"), "[TEST] canvas mounted");
+    console.assert(ROBOT_URL.startsWith("./"), "[TEST] ROBOT_URL is relative (Pages-safe)");
+  </script>
+</body>
+</html>
