@@ -5,56 +5,78 @@
   <title>ORYX Robot — Interactive</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    html,body { height:100%; margin:0; background:#243b4a; }
+    html,body { height:100%; margin:0; background:#243b4a }
     canvas { display:block }
-    .hint { position:fixed; left:12px; bottom:12px; color:#fff; font:14px/1.4 system-ui; opacity:.85 }
+    .hud {
+      position:fixed; inset:auto 12px 12px 12px; padding:10px 12px;
+      font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background:rgba(0,0,0,.35); color:#fff; border:1px solid rgba(255,255,255,.15); border-radius:10px
+    }
+    .hud b { color:#f99f00 }
   </style>
 </head>
 <body>
-  <div class="hint">حرّك الماوس للتفاعل — ORYX: #243b4a / #f99f00</div>
+  <div class="hud" id="hud">جاري التهيئة…</div>
 
-  <!-- نحمّل Three.js وملحقاته من CDN، والـ GLB من GitHub الخاص بك -->
   <script type="module">
-    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
-    import { GLTFLoader } from "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
-
+    // ====== إعدادات الهوية ======
     const ORYX_BLUE   = 0x243b4a;
     const ORYX_ORANGE = 0xf99f00;
 
-    // ملف GLB موجود في نفس الريبو (الجذر)
+    // مهم: بما أن GLB في نفس الجذر، نستخدم مسار نسبي (لا تبدأ بـ /)
     const ROBOT_URL = "./Eclipse_Sentinel_0813205056_texture.glb";
 
-    // Renderer
+    // ====== أدوات ======
+    const hud = document.getElementById('hud');
+    const log = (msg) => hud.innerHTML = msg;
+    const apx = (n) => (n ?? 0).toFixed(0);
+
+    // فحص مسبق للرابط (يساعد لو في 404 أو مسار غلط)
+    try {
+      const headResp = await fetch(ROBOT_URL, { method: 'HEAD', cache: 'no-store' });
+      if (!headResp.ok) {
+        log(`❌ لم أستطع الوصول للملف:<br><b>${ROBOT_URL}</b><br>HTTP ${headResp.status}. 
+        تأكد من الاسم والمسار والحروف الكبيرة/الصغيرة. إن كان الملف داخل مجلد، عدّل ROBOT_URL ليتوافق معه.`);
+      } else {
+        log(`✅ الرابط سليم: <b>${ROBOT_URL}</b><br>ابدأ التحميل…`);
+      }
+    } catch (e) {
+      log(`❌ فشل فحص الرابط (HEAD): ${e?.message || e}`);
+    }
+
+    // ====== تحميل Three من CDN (المكتبات فقط) ======
+    const [{ default: * as THREE }, { GLTFLoader }] = await Promise.all([
+      import("https://unpkg.com/three@0.160.0/build/three.module.js"),
+      import("https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js"),
+    ]);
+
+    // ====== مشهد أساسي ======
     const renderer = new THREE.WebGLRenderer({ antialias:true });
     renderer.setSize(innerWidth, innerHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     document.body.appendChild(renderer.domElement);
 
-    // Scene & Camera
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(ORYX_BLUE);
 
-    const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 100);
+    const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, .1, 100);
     camera.position.set(0, 1.6, 3);
 
-    // Lights (متناسقة مع ORYX)
-    scene.add(new THREE.HemisphereLight(0xffffff, ORYX_BLUE, 0.6));
-    const rim = new THREE.DirectionalLight(ORYX_ORANGE, 1.1);
-    rim.position.set(1.5, 1.2, 1.0); scene.add(rim);
-    const key = new THREE.DirectionalLight(0xffffff, 0.8);
-    key.position.set(-1.2, 1.5, 2.0); scene.add(key);
+    scene.add(new THREE.HemisphereLight(0xffffff, ORYX_BLUE, .6));
+    const rim = new THREE.DirectionalLight(ORYX_ORANGE, 1.1); rim.position.set(1.5,1.2,1); scene.add(rim);
+    const key = new THREE.DirectionalLight(0xffffff, .8);    key.position.set(-1.2,1.5,2); scene.add(key);
 
-    // Load GLB
+    // ====== تحميل GLB ======
+    let robot, headBone = null, t = 0, mx = .5, my = .5;
+
     const loader = new GLTFLoader();
-    let robot, headBone = null, t = 0, mx = 0.5, my = 0.5;
-
     loader.load(
       ROBOT_URL,
       (gltf) => {
         robot = gltf.scene;
         robot.traverse((o)=>{
-          if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.material.roughness = 0.35; }
+          if (o.isMesh) { o.castShadow = o.receiveShadow = true; if (o.material && 'roughness' in o.material) o.material.roughness = .35; }
           if (!headBone && /head|neck/i.test(o.name)) headBone = o;
         });
 
@@ -66,27 +88,28 @@
         robot.scale.setScalar(1.7 / (size.y || 1));
         scene.add(robot);
 
-        console.log("✅ GLB loaded:", ROBOT_URL);
+        log(`✅ تم التحميل — الحجم التقريبي: <b>${apx(size.x)}×${apx(size.y)}×${apx(size.z)}</b>`);
       },
-      (e)=> console.log(`Loading: ${((e.loaded/e.total)*100 || 0).toFixed(0)}%`),
-      (err)=> console.error("GLB load error:", err)
+      (e) => log(`⏳ تحميل: <b>${apx((e.loaded/e.total)*100 || 0)}%</b>`),
+      (err) => {
+        console.error(err);
+        log(`❌ فشل تحميل GLB:<br><b>${ROBOT_URL}</b><br>${err?.message || err}`);
+      }
     );
 
-    // Mouse follow
-    addEventListener("mousemove", (e)=>{ mx = e.clientX / innerWidth; my = e.clientY / innerHeight; });
+    // تفاعل الماوس
+    addEventListener('mousemove', (e)=>{ mx = e.clientX/innerWidth; my = e.clientY/innerHeight; });
 
-    // Animate
+    // حلقة الرسم
     renderer.setAnimationLoop(()=>{
       t += 0.016;
       if (robot){
-        // Tilt مع المؤشر
         const tiltX = (my - 0.5) * -0.15;
         const tiltY = (mx - 0.5) *  0.25;
         robot.rotation.x = THREE.MathUtils.lerp(robot.rotation.x, tiltX, 0.08);
         robot.rotation.y = THREE.MathUtils.lerp(robot.rotation.y, tiltY, 0.08);
-        // تنفّس خفيف
         robot.position.y = Math.sin(t*1.2) * 0.02;
-        // النظر بالرأس
+
         if (headBone){
           headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mx-0.5)*0.6, 0.15);
           headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (my-0.5)*-0.4, 0.15);
@@ -96,16 +119,16 @@
     });
 
     // Resize
-    addEventListener("resize", ()=>{
+    addEventListener('resize', ()=>{
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
       renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     });
 
-    // اختبارات صغيرة في الكونسول
-    console.assert(!!document.querySelector("canvas"), "[TEST] canvas mounted");
-    console.assert(ROBOT_URL.startsWith("./"), "[TEST] ROBOT_URL is relative (Pages-safe)");
+    // اختبارات بسيطة (تظهر بالكونسول)
+    console.assert(!!document.querySelector('canvas'), '[TEST] canvas mounted');
+    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL is relative (Pages-safe)');
   </script>
 </body>
 </html>
