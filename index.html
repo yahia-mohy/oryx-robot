@@ -19,18 +19,20 @@
   <div id="hud">Initializing…</div>
 
   <script type="module">
+    // Three r126 (matches your earlier imports)
     import * as THREE from 'https://unpkg.com/three@0.126.0/build/three.module.js';
     import { GLTFLoader } from 'https://unpkg.com/three@0.126.0/examples/jsm/loaders/GLTFLoader.js';
 
-    // ——— settings ———
+    // ===== Config =====
     const HUD = document.getElementById('hud');
-    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb'; // غيّره إن كان داخل مجلد
+    // يجب أن يكون ملف GLB في نفس مجلد index.html وبنفس الاسم بالضبط:
+    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb';
 
-    // ——— preflight: verify the GLB URL actually exists ———
+    // ===== Preflight: verify the GLB URL exists (helps diagnose 404) =====
     try {
       const head = await fetch(ROBOT_URL, { method:'HEAD', cache:'no-store' });
       if (!head.ok) {
-        HUD.innerHTML = `❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b><br>Check the exact name/location (case-sensitive).`;
+        HUD.innerHTML = `❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b><br>Check exact name/location (case-sensitive).`;
       } else {
         HUD.innerHTML = `⏳ Preparing to load: <b>${ROBOT_URL}</b>`;
       }
@@ -38,106 +40,120 @@
       HUD.innerHTML = `❌ Preflight failed: ${e?.message || e}`;
     }
 
-    // ——— three.js scene ———
+    // ===== Scene setup =====
     let renderer, scene, camera, model, headBone;
     let mouseX = 0.5, mouseY = 0.5;
 
-    function init() {
-      renderer = new THREE.WebGLRenderer({ antialias:true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.outputEncoding = THREE.sRGBEncoding; // r126 API
-      document.body.appendChild(renderer.domElement);
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding; // r126 API
+    document.body.appendChild(renderer.domElement);
 
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x243b4a);
+    // Scene & Camera
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x243b4a);
 
-      camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
-      camera.position.set(0, 1.6, 3);
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 1.6, 3);
 
-      // lights (ORYX look)
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.6);
-      scene.add(hemi);
-      const rim = new THREE.DirectionalLight(0xf99f00, 1.1);
-      rim.position.set(1.5, 1.2, 1.0);
-      scene.add(rim);
-      const key = new THREE.DirectionalLight(0xffffff, 0.8);
-      key.position.set(-1.2, 1.5, 2.0);
-      scene.add(key);
+    // Lights (ORYX look)
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.8);
+    scene.add(hemi);
+    const rim = new THREE.DirectionalLight(0xf99f00, 1.2);
+    rim.position.set(1.8, 1.6, 1.2);
+    scene.add(rim);
+    const key = new THREE.DirectionalLight(0xffffff, 1.0);
+    key.position.set(-1.4, 1.8, 2.2);
+    scene.add(key);
 
-      window.addEventListener('resize', onResize);
-      document.addEventListener('mousemove', (e)=>{
-        mouseX = e.clientX / window.innerWidth;
-        mouseY = e.clientY / window.innerHeight;
-      });
-
-      loadModel();
-    }
-
-    function onResize(){
+    // Events
+    window.addEventListener('resize', ()=>{
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
-    }
+    });
+    document.addEventListener('mousemove', (e)=>{
+      mouseX = e.clientX / window.innerWidth;
+      mouseY = e.clientY / window.innerHeight;
+    });
 
-    function loadModel() {
-      const loader = new GLTFLoader();
-      HUD.textContent = '⏳ Loading: 0%';
+    // ===== Load GLB =====
+    const loader = new GLTFLoader();
+    HUD.textContent = '⏳ Loading: 0%';
 
-      loader.load(
-        ROBOT_URL,
-        (gltf)=>{
-          model = gltf.scene;
-          model.traverse((node)=>{
-            if (node.isMesh) {
-              node.castShadow = true;
-              node.receiveShadow = true;
-              if (node.material && 'roughness' in node.material) node.material.roughness = 0.35;
-            }
-            if (!headBone && (node.isBone || node.type === 'Bone') && /head|neck/i.test(node.name)) {
-              headBone = node;
-            }
-          });
+    loader.load(
+      ROBOT_URL,
+      (gltf)=>{
+        model = gltf.scene;
 
-          // center & scale to ~1.7m tall
-          const bbox = new THREE.Box3().setFromObject(model);
-          const size = bbox.getSize(new THREE.Vector3());
-          const center = bbox.getCenter(new THREE.Vector3());
-          model.position.sub(center);
-          const s = 1.7 / (size.y || 1);
-          model.scale.setScalar(s);
+        // Enable shadows & find head/neck bone if present
+        model.traverse((node)=>{
+          if (node.isMesh) {
+            node.castShadow = true;
+            node.receiveShadow = true;
+            if (node.material && 'roughness' in node.material) node.material.roughness = 0.35;
+          }
+          if (!headBone && (node.isBone || node.type === 'Bone') && /head|neck/i.test(node.name)) {
+            headBone = node;
+          }
+        });
 
-          scene.add(model);
-          HUD.innerHTML = `✅ Loaded — approx size: <b>${size.x.toFixed(2)}×${size.y.toFixed(2)}×${size.z.toFixed(2)} m</b>`;
-          animate();
-        },
-        (xhr)=>{
-          // xhr.total can be 0/undefined on some servers → guard it
-          const pct = xhr.total ? (xhr.loaded / xhr.total * 100) : 0;
-          HUD.innerHTML = `⏳ Loading: <b>${Math.round(pct)}%</b>`;
-        },
-        (err)=>{
-          console.error('GLB load error:', err);
-          HUD.innerHTML = `❌ Error loading model:<br><b>${ROBOT_URL}</b><br>${err?.message || err}`;
-        }
-      );
-    }
+        // --- Center, scale (~1.7m tall), then place feet on ground (y=0) ---
+        const bbox   = new THREE.Box3().setFromObject(model);
+        const size   = bbox.getSize(new THREE.Vector3());
+        const center = bbox.getCenter(new THREE.Vector3());
 
+        // move center to origin
+        model.position.sub(center);
+
+        // scale to target height
+        const s = 1.7 / (size.y || 1);
+        model.scale.setScalar(s);
+
+        // lift by half the (scaled) height so feet rest at y=0
+        const halfHeight = (size.y * s) * 0.5;
+        model.position.y += halfHeight;
+
+        scene.add(model);
+
+        // Fit camera nicely to the model
+        const viewY = halfHeight * 1.0;
+        const diag  = Math.hypot(size.x, size.y, size.z) * s;
+        camera.position.set(0, viewY, Math.max(2.6, diag * 1.2));
+        camera.lookAt(0, viewY * 0.9, 0);
+
+        HUD.innerHTML = `✅ Loaded — approx size: <b>${size.x.toFixed(2)}×${size.y.toFixed(2)}×${size.z.toFixed(2)} m</b>`;
+
+        animate();
+      },
+      (xhr)=>{
+        const pct = xhr.total ? (xhr.loaded / xhr.total * 100) : 0;
+        HUD.innerHTML = `⏳ Loading: <b>${Math.round(pct)}%</b>`;
+      },
+      (err)=>{
+        console.error('GLB load error:', err);
+        HUD.innerHTML = `❌ Error loading model:<br><b>${ROBOT_URL}</b><br>${err?.message || err}`;
+      }
+    );
+
+    // ===== Animate loop =====
     function animate(){
       renderer.setAnimationLoop(()=>{
         if (model){
           const t = performance.now() * 0.001;
 
           // breathing
-          model.position.y = Math.sin(t * 1.2) * 0.02;
+          model.position.y = Math.sin(t * 1.2) * 0.02 + (model.position.y || 0);
 
-          // body tilt (mouseX/Y are 0..1)
+          // body tilt (mouse)
           const tiltX = (mouseY - 0.5) * -0.15;
           const tiltY = (mouseX - 0.5) *  0.25;
           model.rotation.x = THREE.MathUtils.lerp(model.rotation.x, tiltX, 0.08);
           model.rotation.y = THREE.MathUtils.lerp(model.rotation.y, tiltY, 0.08);
 
-          // head look (if bone exists)
+          // head look
           if (headBone){
             headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mouseX - 0.5) * 0.6, 0.15);
             headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (mouseY - 0.5) * -0.4, 0.15);
@@ -147,11 +163,9 @@
       });
     }
 
-    // small self-tests (show in console)
-    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative for GitHub Project Pages.');
-    console.assert(!!document.body, '[TEST] DOM ready');
-
-    init();
+    // Small self-tests
+    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative (GitHub Project Pages).');
+    console.assert(!!document.querySelector('canvas'), '[TEST] canvas mounted');
   </script>
 </body>
 </html>
