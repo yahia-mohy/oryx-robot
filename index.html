@@ -6,11 +6,11 @@
   <title>Oryx Robot — Interactive</title>
   <style>
     :root{ --blue:#243b4a; --orange:#f99f00 }
-    html,body{ height:100%; margin:0; background:var(--blue); color:#fff; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial }
+    html,body{ height:100%; margin:0; background:var(--blue); color:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial }
     canvas{ display:block }
     #hud{
-      position:fixed; left:10px; bottom:10px; background:rgba(0,0,0,.5);
-      padding:10px 12px; border-radius:8px; font-size:.9em; border:1px solid rgba(255,255,255,.15)
+      position:fixed; left:10px; bottom:10px; background:rgba(0,0,0,.52);
+      padding:10px 12px; border-radius:10px; font-size:.9em; border:1px solid rgba(255,255,255,.18)
     }
     #hud b{ color:var(--orange) }
   </style>
@@ -19,152 +19,134 @@
   <div id="hud">Initializing…</div>
 
   <script type="module">
-    // Three r126 (matches your earlier imports)
     import * as THREE from 'https://unpkg.com/three@0.126.0/build/three.module.js';
     import { GLTFLoader } from 'https://unpkg.com/three@0.126.0/examples/jsm/loaders/GLTFLoader.js';
 
-    // ===== Config =====
     const HUD = document.getElementById('hud');
-    // يجب أن يكون ملف GLB في نفس مجلد index.html وبنفس الاسم بالضبط:
-    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb';
+    const ROBOT_URL = './Eclipse_Sentinel_0813205056_texture.glb'; // تأكد أن الملف بجوار index.html
 
-    // ===== Preflight: verify the GLB URL exists (helps diagnose 404) =====
+    // فحص سريع للرابط لمساعدة التشخيص
     try {
       const head = await fetch(ROBOT_URL, { method:'HEAD', cache:'no-store' });
-      if (!head.ok) {
-        HUD.innerHTML = `❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b><br>Check exact name/location (case-sensitive).`;
-      } else {
-        HUD.innerHTML = `⏳ Preparing to load: <b>${ROBOT_URL}</b>`;
-      }
-    } catch (e) {
-      HUD.innerHTML = `❌ Preflight failed: ${e?.message || e}`;
-    }
+      if (!head.ok) HUD.innerHTML = `❌ GLB not found (HTTP ${head.status})<br><b>${ROBOT_URL}</b>`;
+      else HUD.innerHTML = `⏳ Preparing to load: <b>${ROBOT_URL}</b>`;
+    } catch(e){ HUD.innerHTML = `❌ Preflight failed: ${e?.message||e}`; }
 
-    // ===== Scene setup =====
-    let renderer, scene, camera, model, headBone;
-    let mouseX = 0.5, mouseY = 0.5;
-
-    // Renderer
-    renderer = new THREE.WebGLRenderer({ antialias:true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.outputEncoding = THREE.sRGBEncoding; // r126 API
+    // المشهد
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding;           // r126 API
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;     // ألوان أفضل
+    renderer.toneMappingExposure = 1.25;                    // سطوع أنسب
     document.body.appendChild(renderer.domElement);
 
-    // Scene & Camera
-    scene = new THREE.Scene();
+    const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x243b4a);
 
-    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 100);
     camera.position.set(0, 1.6, 3);
 
-    // Lights (ORYX look)
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.8);
+    // إضاءة متناسقة مع ORYX
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x243b4a, 0.9);
     scene.add(hemi);
-    const rim = new THREE.DirectionalLight(0xf99f00, 1.2);
-    rim.position.set(1.8, 1.6, 1.2);
+    const rim = new THREE.DirectionalLight(0xf99f00, 1.25);
+    rim.position.set(2.0, 1.6, 1.3);
     scene.add(rim);
-    const key = new THREE.DirectionalLight(0xffffff, 1.0);
-    key.position.set(-1.4, 1.8, 2.2);
+    const key = new THREE.DirectionalLight(0xffffff, 1.05);
+    key.position.set(-1.6, 1.9, 2.3);
     scene.add(key);
 
-    // Events
-    window.addEventListener('resize', ()=>{
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-    document.addEventListener('mousemove', (e)=>{
-      mouseX = e.clientX / window.innerWidth;
-      mouseY = e.clientY / window.innerHeight;
-    });
-
-    // ===== Load GLB =====
+    // تحميل الموديل
     const loader = new GLTFLoader();
-    HUD.textContent = '⏳ Loading: 0%';
+    let robot, headBone=null, baseY=0, mx=0.5, my=0.5;
 
+    HUD.textContent = '⏳ Loading: 0%';
     loader.load(
       ROBOT_URL,
       (gltf)=>{
-        model = gltf.scene;
+        robot = gltf.scene;
 
-        // Enable shadows & find head/neck bone if present
-        model.traverse((node)=>{
-          if (node.isMesh) {
-            node.castShadow = true;
-            node.receiveShadow = true;
-            if (node.material && 'roughness' in node.material) node.material.roughness = 0.35;
+        // تحسين الخامات واصطياد الرأس
+        robot.traverse((o)=>{
+          if (o.isMesh && o.material){
+            if ('roughness' in o.material) o.material.roughness = 0.35;
+            if ('metalness' in o.material) o.material.metalness = Math.min(0.9, (o.material.metalness ?? 0.6));
+            if ('envMapIntensity' in o.material) o.material.envMapIntensity = 1.0;
           }
-          if (!headBone && (node.isBone || node.type === 'Bone') && /head|neck/i.test(node.name)) {
-            headBone = node;
-          }
+          if (!headBone && (o.isBone || o.type==='Bone') && /head|neck/i.test(o.name)) headBone = o;
         });
 
-        // --- Center, scale (~1.7m tall), then place feet on ground (y=0) ---
-        const bbox   = new THREE.Box3().setFromObject(model);
-        const size   = bbox.getSize(new THREE.Vector3());
-        const center = bbox.getCenter(new THREE.Vector3());
+        // تمركز، تحجيم، ووضع القدمين على الأرض
+        const box   = new THREE.Box3().setFromObject(robot);
+        const size  = box.getSize(new THREE.Vector3());
+        const center= box.getCenter(new THREE.Vector3());
 
-        // move center to origin
-        model.position.sub(center);
+        robot.position.sub(center);           // المركز عند الأصل
+        const scale = 1.7 / (size.y || 1);    // ارتفاع ~1.7م
+        robot.scale.setScalar(scale);
 
-        // scale to target height
-        const s = 1.7 / (size.y || 1);
-        model.scale.setScalar(s);
+        const half = (size.y * scale) * 0.5;  // نصف الارتفاع بعد التحجيم
+        robot.position.y += half;             // الأقدام عند y=0
+        baseY = robot.position.y;             // نحفظ قاعدة الارتفاع لحركة التنفّس
 
-        // lift by half the (scaled) height so feet rest at y=0
-        const halfHeight = (size.y * s) * 0.5;
-        model.position.y += halfHeight;
+        scene.add(robot);
 
-        scene.add(model);
-
-        // Fit camera nicely to the model
-        const viewY = halfHeight * 1.0;
-        const diag  = Math.hypot(size.x, size.y, size.z) * s;
-        camera.position.set(0, viewY, Math.max(2.6, diag * 1.2));
-        camera.lookAt(0, viewY * 0.9, 0);
+        // تأطير الكاميرا ليملأ ~70% من الارتفاع
+        const fitFrac = 0.70;                        // نسبة ملء الشاشة رأسيًا
+        const targetH = (size.y * scale) / fitFrac;  // الارتفاع المراد عرضه
+        const dist = (targetH * 0.5) / Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+        const midY = baseY * 0.95;
+        camera.position.set(0, midY, Math.max(2.2, dist));
+        camera.lookAt(0, midY, 0);
 
         HUD.innerHTML = `✅ Loaded — approx size: <b>${size.x.toFixed(2)}×${size.y.toFixed(2)}×${size.z.toFixed(2)} m</b>`;
-
-        animate();
       },
       (xhr)=>{
-        const pct = xhr.total ? (xhr.loaded / xhr.total * 100) : 0;
-        HUD.innerHTML = `⏳ Loading: <b>${Math.round(pct)}%</b>`;
+        const pct = xhr.total ? (xhr.loaded/xhr.total*100) : 0;
+        HUD.innerHTML = `⏳ Loading: <b>${pct.toFixed(0)}%</b>`;
       },
       (err)=>{
-        console.error('GLB load error:', err);
-        HUD.innerHTML = `❌ Error loading model:<br><b>${ROBOT_URL}</b><br>${err?.message || err}`;
+        console.error(err);
+        HUD.innerHTML = `❌ Error loading: <b>${ROBOT_URL}</b><br>${err?.message||err}`;
       }
     );
 
-    // ===== Animate loop =====
-    function animate(){
-      renderer.setAnimationLoop(()=>{
-        if (model){
-          const t = performance.now() * 0.001;
+    // تفاعل الماوس
+    addEventListener('mousemove', e=>{ mx = e.clientX/innerWidth; my = e.clientY/innerHeight; });
 
-          // breathing
-          model.position.y = Math.sin(t * 1.2) * 0.02 + (model.position.y || 0);
+    // حلقة الرسم
+    renderer.setAnimationLoop(()=>{
+      if (robot){
+        const t = performance.now()*0.001;
 
-          // body tilt (mouse)
-          const tiltX = (mouseY - 0.5) * -0.15;
-          const tiltY = (mouseX - 0.5) *  0.25;
-          model.rotation.x = THREE.MathUtils.lerp(model.rotation.x, tiltX, 0.08);
-          model.rotation.y = THREE.MathUtils.lerp(model.rotation.y, tiltY, 0.08);
+        // تنفّس حول baseY (بدون انزياح للأسفل)
+        robot.position.y = baseY + Math.sin(t*1.2)*0.03;
 
-          // head look
-          if (headBone){
-            headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mouseX - 0.5) * 0.6, 0.15);
-            headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (mouseY - 0.5) * -0.4, 0.15);
-          }
+        // ميلان الجسم
+        const tiltX = (my - 0.5) * -0.15;
+        const tiltY = (mx - 0.5) *  0.25;
+        robot.rotation.x = THREE.MathUtils.lerp(robot.rotation.x, tiltX, 0.08);
+        robot.rotation.y = THREE.MathUtils.lerp(robot.rotation.y, tiltY, 0.08);
+
+        // نظرة الرأس
+        if (headBone){
+          headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, (mx-0.5)*0.6, 0.15);
+          headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, (my-0.5)*-0.4, 0.15);
         }
-        renderer.render(scene, camera);
-      });
-    }
+      }
+      renderer.render(scene, camera);
+    });
 
-    // Small self-tests
-    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative (GitHub Project Pages).');
+    // تغيير المقاس
+    addEventListener('resize', ()=>{
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // اختبارات بسيطة
+    console.assert(ROBOT_URL.startsWith('./'), '[TEST] ROBOT_URL should be relative for GitHub Project Pages.');
     console.assert(!!document.querySelector('canvas'), '[TEST] canvas mounted');
   </script>
 </body>
